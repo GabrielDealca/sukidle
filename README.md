@@ -40,7 +40,9 @@ A daily, Wordle-style browser game for Filipino shoppers. Each day shows **one s
 - One puzzle per day. The day rolls over at **00:00 Asia/Manila**.
 - No account needed to play. Stats and streaks live on the device.
 - An optional account (for leaderboards and prizes) comes later.
-- Prices come from **SM Markets** (SM Supermarket / SM Hypermarket / Savemore), as a fixed snapshot from **one reference branch**.
+- Prices come from **SM Markets** (SM Supermarket / SM Hypermarket / Savemore), as fixed snapshots taken from the **smmarkets.ph website**.
+  Whether a reference branch is needed depends on Phase 0: if the site's prices vary by selected store, we pin one
+  branch per snapshot; if they don't, the branch concept is dropped and prices are recorded as the online price.
 
 Inspiration: Costcodle (US, Costco). This version is built for the Philippines, with local UI,
 local products and Taglish copy.
@@ -177,7 +179,10 @@ Robinsons or manual sources later without touching downstream code.
 - **Money:** store as integer **centavos** (`price_centavos`). Never use floats.
 - **Pack size parsing:** `"Lucky Me Pancit Canton Original 60g x 6"` → `size_value=60, size_unit=g, pack_count=6`.
   Handle `g, kg, ml, L, pcs, pack, sachet, tie-pack, x N`. Unit tests with ≥40 real-world strings.
-- **Sale vs regular price:** store both. The puzzle answer is the **regular price**, unless an admin chooses otherwise.
+- **Sale vs regular price:** store both. The puzzle answer is **always the regular price** (owner decision).
+  The sale/promo price is still stored (on `PriceSnapshot`, and copied to `DailyPuzzle.promo_price_centavos`
+  on themed days) for partnership and sponsorship use, e.g. "today's item is on promo at ₱X" sponsor slots. It is
+  never used to check guesses.
 - **Dedup key:** barcode/SKU when available. Otherwise `(source, source_product_id)`.
 - **Name cleanup:** trim promo noise ("NEW!", "BUY 1 TAKE 1") but keep brand + variant + size.
 
@@ -219,7 +224,8 @@ PriceSnapshot       id, product_id, branch_id, scrape_run_id (nullable),
                     INDEX (product_id, observed_on DESC)
 
 DailyPuzzle         id, puzzle_number, play_date (date, Asia/Manila, UNIQUE),
-                    product_id, answer_snapshot_id, answer_centavos (denormalized),
+                    product_id, answer_snapshot_id, answer_centavos (denormalized, regular price),
+                    promo_price_centavos (nullable; theme/promo price, never the answer),
                     theme ('default'|'pasko'|'summer'|'balik-eskwela'|...),
                     status ('scheduled'|'live'|'archived')
 
@@ -415,18 +421,28 @@ co-run with SM Markets, or with FMCG brands whose products appear in the game.
 
 Document every manual AWS step in `deploy/README-infra.md`. (Terraform/CDK is a later nice-to-have, not v1.)
 
+### Environments (owner decision)
+| Env | Branch | Deploys | Domain |
+|---|---|---|---|
+| **staging** | `main` | Automatically on every merge to `main` | `staging.<domain>` |
+| **production** | `production` | Only when the owner manually merges `main` → `production` (PR) | apex + `www` |
+
+To keep costs down, staging shares the EC2 instance (a separate Compose project, routed by nginx `server_name`)
+and the RDS instance (a separate database `sukidle_staging` with its own DB user). Split them out later if load requires it.
+
 ### GitHub Actions
-**`ci.yml`** runs on every pull request and on push to `main`:
+**`ci.yml`** runs on every pull request and on push to `main` / `production`:
 1. Start a Postgres 16 service container.
 2. Backend: install deps, `ruff`, `black --check`, `python manage.py migrate`, `pytest`.
 3. Frontend: `npm ci`, typecheck, `npm run build`.
 
-**`deploy.yml`** runs on push to `main` after CI passes (also runnable manually via `workflow_dispatch`):
+**`deploy.yml`** runs after CI passes: push to `main` → staging, push to `production` → production
+(also runnable manually via `workflow_dispatch`):
 1. Build the backend Docker image and the frontend static build.
 2. Push the image to **GitHub Container Registry (ghcr.io)**.
 3. Connect to EC2. Preferred: **AWS SSM `send-command`** using GitHub OIDC → an IAM role (no long-lived AWS keys, no open SSH port). Fallback: SSH with a deploy key stored in GitHub secrets.
 4. On the host, `deploy/scripts/deploy.sh` does: pull the new image → `migrate` → `collectstatic` → `docker compose up -d` → health-check `GET /api/health`. If the health check fails, roll back to the previous image tag.
-5. Use a `production` GitHub Environment so deploys can require manual approval later.
+5. Use `staging` and `production` GitHub Environments, each with its own secrets.
 
 **Scheduled jobs:** the daily puzzle rollover needs no job (the puzzle is looked up by Asia/Manila date). The
 `schedule_puzzles` top-up and any data imports run as **cron on the EC2 host** (`docker compose exec web python manage.py …`).
@@ -444,9 +460,11 @@ path that holds them). `GITHUB_TOKEN` handles ghcr.io pushes.
 
 ---
 
-## 13. Open questions for the owner
-1. Final game name and domain — current working name **Sukidle** (alternative: **Presyodle**).
-2. Which branch is the reference branch?
-3. Accept sale prices as answers on themed days, or always use regular price?
-4. Domain registrar: buy the domain in Route 53 directly, or point an existing registrar's nameservers to Route 53?
-5. Staging environment now, or production only until the proof of concept is approved?
+## 13. Owner decisions & open questions
+1. **Name: Sukidle** (decided). Domain still to be chosen.
+2. **Reference branch:** prices come from the smmarkets.ph website. Phase 0 checks whether prices vary by selected
+   store; a branch is pinned only if they do.
+3. **Answer = always the regular price** (decided). Theme/promo prices are stored for partnership and sponsorship use.
+4. **Registrar (open):** Route 53 is usually cheaper long-term for `.com` (flat renewal, no upsells); GoDaddy is
+   needed for `.ph`. DNS is hosted in Route 53 either way.
+5. **Staging now** (decided): `main` auto-deploys to staging; the owner manually merges `main` → `production`.
