@@ -77,7 +77,31 @@ local products and Taglish copy.
 | DNS | **AWS Route 53** | Domain's hosted zone; A record → EC2 Elastic IP. |
 | Images | **AWS S3** (+ CloudFront later if needed) | Store our own processed copies. Never hotlink the source site. |
 
-Local dev: `docker compose up` must bring up everything (Postgres included). **Use PostgreSQL everywhere** (local, CI and production), not SQLite.
+**Use PostgreSQL everywhere** (local, CI and production), not SQLite.
+
+### Local development (no Docker needed)
+
+Requires Python 3.12 and a local PostgreSQL 16 server (native install, or `docker compose up -d db` if you prefer).
+
+```bash
+# one-time: create the database (native Postgres)
+psql -U postgres -c "CREATE USER sukidle WITH PASSWORD 'sukidle' CREATEDB;"
+psql -U postgres -c "CREATE DATABASE sukidle OWNER sukidle;"
+
+cd backend
+python -m venv .venv
+.venv/Scripts/pip install -r requirements-dev.txt     # macOS/Linux: .venv/bin/pip
+cp ../.env.example ../.env                              # edit if your DB URL differs
+.venv/Scripts/python manage.py migrate
+.venv/Scripts/python manage.py createsuperuser
+.venv/Scripts/python manage.py runserver                # http://localhost:8000/admin
+
+# tests + lint
+.venv/Scripts/pytest
+.venv/Scripts/ruff check . && .venv/Scripts/black --check .
+```
+
+Docker (`docker compose up`) is kept for parity with production but is optional for day-to-day work.
 
 **Fixed infrastructure decisions (don't swap these out):** GitHub, GitHub Actions, AWS EC2, AWS Route 53,
 AWS RDS (PostgreSQL). See §12 for the deployment setup.
@@ -139,6 +163,12 @@ Investigate **smmarkets.ph** and report back with:
 5. Recommendation: `httpx` JSON client vs Playwright, and the expected request volume for a full category crawl.
 
 Write the findings to `docs/discovery.md`. **Wait for approval.**
+
+> **Owner decision (2026-11-27):** Phase 0 found that the smmarkets.ph Terms & Conditions forbid reuse of site
+> content without written consent (see `docs/discovery.md`). The owner chose to **proceed with the scraper anyway**
+> and not to contact SM Markets. The scraper still follows every rule in §4.1 (honest User-Agent, ~1 req/s, stops
+> if blocked, `INGEST_ENABLED` kill switch), and SM product images are not used. The CSV path stays available as a
+> fallback.
 
 ### 4.1 Scraping rules (non-negotiable)
 
